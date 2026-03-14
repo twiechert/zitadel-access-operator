@@ -83,6 +83,13 @@ func (r *SecuredApplicationReconciler) Reconcile(ctx context.Context, req ctrl.R
 						return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 					}
 				}
+				for path, appID := range app.Status.BypassApplicationIDs {
+					logger.Info("deleting bypass Access Application", "path", path, "appId", appID)
+					if err := r.Cloudflare.DeleteAccessApp(ctx, appID); err != nil {
+						logger.Error(err, "failed to delete bypass Access Application, will retry")
+						return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+					}
+				}
 			} else {
 				logger.Info("delete protection enabled, keeping external resources")
 			}
@@ -199,13 +206,19 @@ func (r *SecuredApplicationReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return r.setCondition(ctx, &app, metav1.ConditionFalse, "PolicyFailed", err.Error())
 	}
 
-	// 5. Reconcile Cloudflare Tunnel Ingress.
+	// 5. Reconcile bypass Access Applications for unauthenticated paths.
+	bypassIDs, err := r.reconcileBypassApps(ctx, &app)
+	if err != nil {
+		return r.setCondition(ctx, &app, metav1.ConditionFalse, "BypassAppFailed", err.Error())
+	}
+
+	// 6. Reconcile Cloudflare Tunnel Ingress.
 	if err := r.reconcileIngress(ctx, &app); err != nil {
 		return r.setCondition(ctx, &app, metav1.ConditionFalse, "IngressFailed", err.Error())
 	}
 	logger.Info("reconciled tunnel ingress", "name", app.Name)
 
-	// 6. Reconcile direct OIDC Ingress (bypasses CF Access, app handles auth).
+	// 7. Reconcile direct OIDC Ingress (bypasses CF Access, app handles auth).
 	if app.Spec.NativeOIDC != nil && app.Spec.NativeOIDC.Ingress != nil {
 		if err := r.reconcileOIDCIngress(ctx, &app); err != nil {
 			return r.setCondition(ctx, &app, metav1.ConditionFalse, "OIDCIngressFailed", err.Error())
@@ -213,12 +226,13 @@ func (r *SecuredApplicationReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info("reconciled OIDC ingress", "name", app.Name+"-oidc")
 	}
 
-	// 7. Update status.
+	// 8. Update status.
 	app.Status.ProjectID = project.ID
 	app.Status.ZitadelAppID = oidcApp.ID
 	app.Status.ClientID = oidcApp.ClientID
 	app.Status.AccessApplicationID = accessAppID
 	app.Status.AccessPolicyID = policy.ID
+	app.Status.BypassApplicationIDs = bypassIDs
 	app.Status.Ready = true
 	return r.setCondition(ctx, &app, metav1.ConditionTrue, "Reconciled", "All resources are up to date")
 }
@@ -456,6 +470,45 @@ func (r *SecuredApplicationReconciler) reconcileOIDCIngress(ctx context.Context,
 	})
 
 	return err
+}
+
+func (r *SecuredApplicationReconciler) reconcileBypassApps(ctx context.Context, app *accessv1alpha1.SecuredApplication) (map[string]string, error) {
+	logger := log.FromContext(ctx)
+	desired := make(map[string]bool, len(app.Spec.Access.BypassPaths))
+	for _, p := range app.Spec.Access.BypassPaths {
+		desired[p] = true
+	}
+
+	result := make(map[string]string, len(app.Spec.Access.BypassPaths))
+
+	// Delete bypass apps for paths that are no longer in the spec.
+	for path, appID := range app.Status.BypassApplicationIDs {
+		if !desired[path] {
+			logger.Info("removing stale bypass Access Application", "path", path, "appId", appID)
+			if err := r.Cloudflare.DeleteAccessApp(ctx, appID); err != nil {
+				return nil, fmt.Errorf("delete stale bypass app for %q: %w", path, err)
+			}
+		}
+	}
+
+	// Create or keep bypass apps for desired paths.
+	for _, path := range app.Spec.Access.BypassPaths {
+		if existingID, ok := app.Status.BypassApplicationIDs[path]; ok {
+			result[path] = existingID
+			continue
+		}
+
+		domain := app.Spec.Host + path
+		name := fmt.Sprintf("%s-bypass-%s", app.Name, path)
+		logger.Info("creating bypass Access Application", "domain", domain)
+		created, err := r.Cloudflare.CreateBypassApp(ctx, name, domain)
+		if err != nil {
+			return nil, fmt.Errorf("create bypass app for %q: %w", path, err)
+		}
+		result[path] = created.ID
+	}
+
+	return result, nil
 }
 
 func (r *SecuredApplicationReconciler) setCondition(ctx context.Context, app *accessv1alpha1.SecuredApplication, status metav1.ConditionStatus, reason, message string) (ctrl.Result, error) {

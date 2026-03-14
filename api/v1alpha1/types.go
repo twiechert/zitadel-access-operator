@@ -74,6 +74,14 @@ type Access struct {
 	// Each claim is checked against the specified value.
 	// +optional
 	Claims []ClaimCheck `json:"claims,omitempty"`
+
+	// BypassPaths lists path prefixes that should bypass Cloudflare Access
+	// authentication. For each path, a separate CF Access Application is
+	// created with a "bypass" policy allowing unauthenticated access.
+	// Useful for webhook endpoints that receive callbacks from external
+	// services (e.g. Telegram, Stripe).
+	// +optional
+	BypassPaths []string `json:"bypassPaths,omitempty"`
 }
 
 // ClaimCheck defines an OIDC claim name/value pair for a Cloudflare Access policy rule.
@@ -213,6 +221,9 @@ type SecuredApplicationStatus struct {
 
 	// AccessPolicyID is the Cloudflare Access Policy ID.
 	AccessPolicyID string `json:"accessPolicyId,omitempty"`
+
+	// BypassApplicationIDs maps bypass path → CF Access Application ID.
+	BypassApplicationIDs map[string]string `json:"bypassApplicationIds,omitempty"`
 
 	// Ready indicates the application is fully reconciled.
 	Ready bool `json:"ready"`

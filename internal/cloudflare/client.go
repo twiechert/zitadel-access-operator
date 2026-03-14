@@ -46,6 +46,11 @@ type Client interface {
 	// UpsertAccessPolicy creates or updates the allow policy on an Access Application
 	// with inline OIDC claim rules (one per role).
 	UpsertAccessPolicy(ctx context.Context, appID string, existingPolicyID string, rules []OIDCClaimRule) (*AccessPolicy, error)
+
+	// CreateBypassApp creates a self-hosted Access Application with a bypass policy
+	// that allows unauthenticated access. The domain should include the path
+	// (e.g. "example.com/webhook").
+	CreateBypassApp(ctx context.Context, name, domain string) (*AccessApp, error)
 }
 
 // NewClient creates a Cloudflare API client.
@@ -222,4 +227,44 @@ func (c *httpClient) UpsertAccessPolicy(ctx context.Context, appID string, exist
 	}
 
 	return &AccessPolicy{ID: result.Result.ID}, nil
+}
+
+func (c *httpClient) CreateBypassApp(ctx context.Context, name, domain string) (*AccessApp, error) {
+	body := map[string]any{
+		"name":             name,
+		"domain":           domain,
+		"type":             "self_hosted",
+		"session_duration": "24h",
+	}
+
+	respBody, err := c.do(ctx, http.MethodPost, c.accountPath("/apps"), body)
+	if err != nil {
+		return nil, fmt.Errorf("create bypass access app: %w", err)
+	}
+
+	var result struct {
+		Result struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal bypass app response: %w", err)
+	}
+
+	// Create bypass policy on the app.
+	policyBody := map[string]any{
+		"name":       "Bypass",
+		"decision":   "bypass",
+		"precedence": 1,
+		"include":    []map[string]any{{"everyone": map[string]any{}}},
+	}
+	path := c.accountPath(fmt.Sprintf("/apps/%s/policies", result.Result.ID))
+	if _, err := c.do(ctx, http.MethodPost, path, policyBody); err != nil {
+		// Clean up the app if policy creation fails.
+		_ = c.DeleteAccessApp(ctx, result.Result.ID)
+		return nil, fmt.Errorf("create bypass policy: %w", err)
+	}
+
+	return &AccessApp{ID: result.Result.ID, Name: result.Result.Name}, nil
 }

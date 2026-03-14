@@ -81,6 +81,16 @@ spec:
                       - value
                       type: object
                     type: array
+                  bypassPaths:
+                    description: |-
+                      BypassPaths lists path prefixes that should bypass Cloudflare Access
+                      authentication. For each path, a separate CF Access Application is
+                      created with a "bypass" policy allowing unauthenticated access.
+                      Useful for webhook endpoints that receive callbacks from external
+                      services (e.g. Telegram, Stripe).
+                    items:
+                      type: string
+                    type: array
                   project:
                     description: Project is the Zitadel project name. The operator
                       resolves this to a project ID.
@@ -254,6 +264,12 @@ spec:
               accessPolicyId:
                 description: AccessPolicyID is the Cloudflare Access Policy ID.
                 type: string
+              bypassApplicationIds:
+                additionalProperties:
+                  type: string
+                description: BypassApplicationIDs maps bypass path → CF Access Application
+                  ID.
+                type: object
               clientId:
                 description: ClientID is the OIDC client ID.
                 type: string
