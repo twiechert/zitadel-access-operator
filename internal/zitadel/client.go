@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 )
+
+// ErrNotFound is returned when the Zitadel API returns 404.
+var ErrNotFound = errors.New("zitadel resource not found")
 
 // Project represents a Zitadel project.
 type Project struct {
@@ -99,6 +103,9 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]b
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("zitadel API %s %s returned %d: %s: %w", method, path, resp.StatusCode, string(respBody), ErrNotFound)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("zitadel API %s %s returned %d: %s", method, path, resp.StatusCode, string(respBody))
 	}

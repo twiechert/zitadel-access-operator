@@ -210,6 +210,19 @@ func (c *httpClient) UpsertAccessPolicy(ctx context.Context, appID string, exist
 		return &AccessPolicy{ID: existingPolicyID}, nil
 	}
 
+	// No known policy ID — check if the app already has policies (e.g. re-adopted app).
+	// If a policy exists, update it instead of creating a duplicate.
+	if foundID, err := c.findFirstPolicyID(ctx, appID); err != nil {
+		return nil, fmt.Errorf("list existing policies: %w", err)
+	} else if foundID != "" {
+		path := c.accountPath(fmt.Sprintf("/apps/%s/policies/%s", appID, foundID))
+		_, err := c.do(ctx, http.MethodPut, path, body)
+		if err != nil {
+			return nil, fmt.Errorf("update re-adopted access policy: %w", err)
+		}
+		return &AccessPolicy{ID: foundID}, nil
+	}
+
 	// Create new policy.
 	path := c.accountPath(fmt.Sprintf("/apps/%s/policies", appID))
 	respBody, err := c.do(ctx, http.MethodPost, path, body)
@@ -227,6 +240,30 @@ func (c *httpClient) UpsertAccessPolicy(ctx context.Context, appID string, exist
 	}
 
 	return &AccessPolicy{ID: result.Result.ID}, nil
+}
+
+// findFirstPolicyID returns the ID of the first policy on an Access Application,
+// or "" if none exist. This is used to detect pre-existing policies on re-adopted apps.
+func (c *httpClient) findFirstPolicyID(ctx context.Context, appID string) (string, error) {
+	path := c.accountPath(fmt.Sprintf("/apps/%s/policies", appID))
+	respBody, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		Result []struct {
+			ID string `json:"id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("unmarshal policies list: %w", err)
+	}
+
+	if len(result.Result) > 0 {
+		return result.Result[0].ID, nil
+	}
+	return "", nil
 }
 
 func (c *httpClient) CreateBypassApp(ctx context.Context, name, domain string) (*AccessApp, error) {

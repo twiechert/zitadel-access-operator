@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -287,12 +288,22 @@ func (r *SecuredApplicationReconciler) reconcileZitadelApp(ctx context.Context, 
 	// Update existing app.
 	if app.Status.ZitadelAppID != "" {
 		if err := r.Zitadel.UpdateApp(ctx, projectID, app.Status.ZitadelAppID, config); err != nil {
-			return nil, "", err
+			// If the app no longer exists (e.g. after a Zitadel DB wipe), clear the
+			// stale ID and fall through to re-adoption or creation.
+			if errors.Is(err, zitadel.ErrNotFound) {
+				log.FromContext(ctx).Info("stale ZitadelAppID returned 404, clearing for re-adoption",
+					"appId", app.Status.ZitadelAppID)
+				app.Status.ZitadelAppID = ""
+				app.Status.ClientID = ""
+			} else {
+				return nil, "", err
+			}
+		} else {
+			return &zitadel.App{
+				ID:       app.Status.ZitadelAppID,
+				ClientID: app.Status.ClientID,
+			}, "", nil
 		}
-		return &zitadel.App{
-			ID:       app.Status.ZitadelAppID,
-			ClientID: app.Status.ClientID,
-		}, "", nil
 	}
 
 	// Try to find by name (re-adoption).
